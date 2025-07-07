@@ -1,44 +1,51 @@
+import torch
 import cv2
 import easyocr
-from gate import open_gate
-from camera import get_frame
-import time
+import numpy as np
 
-reader = easyocr.Reader(['en'], gpu=False)
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Загружаем список разрешённых номеров
-with open("allowed_plates.txt", "r") as f:
-    allowed_plates = set(line.strip().upper() for line in f.readlines())
+# Загрузка модели YOLOv5
+model = torch.hub.load('yolov5', 'custom', path='weights/plate.pt', source='local')
+model.conf = 0.4  # Confidence threshold
 
-def recognize_plate(frame):
-    results = reader.readtext(frame)
-    for bbox, text, conf in results:
-        clean_text = text.upper().replace(" ", "")
-        if 5 <= len(clean_text) <= 10:
-            return clean_text
-    return None
+# EasyOCR
+reader = easyocr.Reader(['en'])
+
+# Камера
+cap = cv2.VideoCapture(0)
 
 while True:
-    frame = get_frame()
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-    if frame is None:
-        continue
+    # Детекция номеров
+    results = model(frame)
 
-    # Отобразим превью
-    cv2.imshow("Camera", frame)
+    # Обработка детекций
+    for *box, conf, cls in results.xyxy[0]:
+        x1, y1, x2, y2 = map(int, box)
 
-    plate = recognize_plate(frame)
-    if plate:
-        print(f"[INFO] Распознан номер: {plate}")
-        if plate in allowed_plates:
-            print("[ACCESS] Доступ разрешён.")
-            open_gate()
-        else:
-            print("[ACCESS] Доступ запрещён.")
+        # Вырезаем номер
+        plate_img = frame[y1:y2, x1:x2]
 
-        time.sleep(5)  # чтобы не распознавать один и тот же номер снова
+        # Распознаём номер
+        ocr_result = reader.readtext(plate_img)
+
+        # Показываем результат
+        if ocr_result:
+            text = ocr_result[0][1]
+            print(f"[OCR] Распознан номер: {text}")
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, text, (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+    cv2.imshow("ANPR", frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
+cap.release()
 cv2.destroyAllWindows()
